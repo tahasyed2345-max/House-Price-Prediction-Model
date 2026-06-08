@@ -1,0 +1,1922 @@
+---
+title: "Capstone1"
+output: html_document
+date: "2026-03-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## R Markdown
+
+# Download train data
+```{r}
+
+df <- read.csv("train.csv")
+```
+
+# Calculate Categorical P-values
+```{r}
+pvals <- sapply(names(df)[sapply(df, function(x) is.factor(x) | is.character(x))], function(x) {
+  fit <- aov(as.formula(paste("SalePrice ~", x)), data = df)
+  summary(fit)[[1]][["Pr(>F)"]][1]
+})
+
+pvals
+```
+
+# Determine Categorical significance based on CI 99% 
+```{r}
+alpha <- 0.01
+
+significance <- ifelse(pvals < alpha, "Significant", "Not Significant")
+
+anova_results <- data.frame(
+  Variable = names(pvals),
+  P_value = round(pvals, 6),
+  Significance = significance
+)
+
+anova_results
+```
+# Identify Not Significant Categorical Variables 
+```{r}
+not_significant_cat <- anova_results[anova_results$Significance == "Not Significant", ]
+
+print(not_significant_cat)
+```
+
+
+
+# Compute Numerical P-values 
+```{r}
+numeric_vars <- names(df)[sapply(df, is.numeric) & names(df) != "SalePrice"]
+
+numeric_pvals <- sapply(numeric_vars, function(var) {
+  fit <- lm(as.formula(paste("SalePrice ~", var)), data = df)
+  summary(fit)$coefficients[2, "Pr(>|t|)"]
+})
+
+numeric_results <- data.frame(
+  Variable = names(numeric_pvals),
+  P_value = round(numeric_pvals, 6)
+)
+
+print(numeric_results)
+```
+
+# Determine Numerical significance based on CI 99% 
+```{r}
+alpha <- 0.01
+
+significance <- ifelse(numeric_results$P_value < alpha, "Significant", "Not Significant")
+
+numeric_results$Significance <- significance
+
+print(numeric_results)
+```
+
+# Identify Not Significant Numerical Variables 
+```{r}
+not_significant_vars <- numeric_results[numeric_results$Significance == "Not Significant", ]
+
+print(not_significant_vars)
+```
+
+
+# Remove Insignificant Variables
+```{r}
+insignificant_vars <- c(
+  "Id", "LandSlope", "Condition2", "BsmtFinType2",
+  "PoolQC", "MiscFeature", "Street", "Utilities",
+  "BsmtFinSF2", "LowQualFinSF", "BsmtHalfBath",
+  "X3SsnPorch", "MiscVal", "MoSold", "YrSold", "BldgType", "HouseStyle"
+)
+
+clean.df <- df[, !(names(df) %in% insignificant_vars)]
+```
+
+
+# Determine Reliability Of Significant Categorical Variables
+```{r}
+cat_vars <- names(clean.df)[sapply(clean.df, function(x) is.factor(x) | is.character(x))]
+
+na_percent <- sapply(clean.df[cat_vars], function(x) {
+  sum(is.na(x)) / length(x) * 100
+})
+
+na_percent_df <- data.frame(
+  Variable = names(na_percent),
+  NA_Percent = round(na_percent, 2)
+)
+
+na_percent_df <- na_percent_df[order(-na_percent_df$NA_Percent), ]
+
+print(na_percent_df)
+```
+
+# Identify Unreliable Categorical Variables (Threshold >30% NA=Unreliable) And Remove
+```{r}
+vars_to_remove <- names(na_percent[na_percent > 30])
+clean.df <- clean.df[, !(names(clean.df) %in% vars_to_remove)]
+
+print(vars_to_remove)
+```
+
+# Determine Reliability Of Significant Numerical Variables
+```{r}
+numeric_vars <- names(clean.df)[sapply(clean.df, is.numeric)]
+
+na_percent_num <- sapply(clean.df[numeric_vars], function(x) {
+  sum(is.na(x)) / length(x) * 100
+})
+
+numeric_reliability <- data.frame(
+  Variable = names(na_percent_num),
+  NA_Percent = round(na_percent_num, 2),
+  Reliable = ifelse(na_percent_num <= 20, "Yes", "No")  # using 20% threshold
+)
+
+numeric_reliability <- numeric_reliability[order(-numeric_reliability$NA_Percent), ]
+
+print(numeric_reliability)
+```
+
+
+# Identify Unreliable Numerical Variables (Threshold >20% NA=Unreliable)
+```{r}
+vars_to_remove_num <- names(na_percent_num[na_percent_num > 20])
+
+clean.df <- clean.df[, !(names(clean.df) %in% vars_to_remove_num)]
+
+print(vars_to_remove_num)
+```
+
+# Remove NA Values Within Categorical Variables Using Mode
+```{r}
+cat_vars <- names(clean.df)[sapply(clean.df, function(x) is.factor(x) | is.character(x))]
+
+get_mode <- function(x) {
+  ux <- na.omit(unique(x))
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+for (var in cat_vars) {
+  clean.df[[var]][is.na(clean.df[[var]])] <- get_mode(clean.df[[var]])
+}
+```
+
+
+# Remove NA Values Within Numerical Variables Using Median
+```{r}
+numeric_vars <- names(clean.df)[sapply(clean.df, is.numeric)]
+
+for (var in numeric_vars) {
+  median_val <- median(clean.df[[var]], na.rm = TRUE)
+  clean.df[[var]][is.na(clean.df[[var]])] <- median_val
+}
+```
+
+```{r}
+clean.df
+```
+
+
+```{r}
+nprice <- aggregate(SalePrice ~ Neighborhood, data = clean.df, mean)  |>
+  arrange(desc(SalePrice))
+nprice
+```
+
+Identify the Number of Houses Within Each Neighborhood
+```{r}
+clean.df |>
+  count(Neighborhood, sort = TRUE)
+```
+
+Separate Neighborhoods into High, Middle, and Low house prices   (Not Used)
+```{r}
+neighborhood.price <- aggregate(SalePrice ~ Neighborhood, data = clean.df, mean)
+
+neighborhood.price$Price.Level <- cut(
+  neighborhood.price$SalePrice,
+  breaks = c(98576.47, 177482.75, 256389.03, 335295.32),
+  labels = c("Low", "Middle", "High"),
+  include.lowest = TRUE
+)
+neighborhood.price <- neighborhood.price |>
+  arrange(desc(SalePrice))
+
+neighborhood.price
+```
+
+Convert Neighborhood Names Into Low, Medium, High In Correspondence To Mean House Price (Not Used)
+```{r}
+clean.df$Neighborhood <- ifelse(clean.df$SalePrice <= 177482.75, "Low",
+                         ifelse(clean.df$SalePrice <= 256389.03, "Middle", "High"))
+```
+
+
+```{r}
+clean.df
+```
+
+
+Add GarageCars^2 
+```{r}
+clean.df$GarageCars_sq <- clean.df$GarageCars^2
+```
+
+
+Convert Categorical Variables into Numeric Variables
+```{r}
+clean.df$ExterQual <- as.numeric(dplyr::recode(clean.df$ExterQual,
+  "Po" = 1,
+  "Fa" = 2,
+  "TA" = 3,
+  "Gd" = 4,
+  "Ex" = 5
+))
+
+#Convert ExterCond to Numeric
+clean.df$ExterCond <- as.numeric(dplyr::recode(clean.df$ExterCond,
+  "Po" = 1,
+  "Fa" = 2,
+  "TA" = 3,
+  "Gd" = 4,
+  "Ex" = 5
+))
+
+#Convert BsmtQual to Numeric
+clean.df$BsmtQual <- as.numeric(dplyr::recode(clean.df$BsmtQual,
+  
+  "Po" = 1,
+  "Fa" = 2,
+  "TA" = 3,
+  "Gd" = 4,
+  "Ex" = 5
+))
+
+#Convert BsmtCond to Numeric
+clean.df$BsmtCond <- as.numeric(dplyr::recode(clean.df$BsmtCond,
+  "NA" = 0,
+  "Po" = 1,
+  "Fa" = 2,
+  "TA" = 3,
+  "Gd" = 4,
+  "Ex" = 5
+))
+
+#BsmtExposure
+clean.df$BsmtExposure <- as.numeric(dplyr::recode(clean.df$BsmtExposure,
+  "NA" = 0,
+  "No" = 1,
+  "Mn" = 2,
+  "Av" = 3,
+  "Gd" = 4
+))
+
+#HeatingQC
+clean.df$HeatingQC <- as.numeric(dplyr::recode(clean.df$HeatingQC,
+  "Po" = 1,
+  "Fa" = 2,
+  "TA" = 3,
+  "Gd" = 4,
+  "Ex" = 5
+))
+
+#KitchenQual
+clean.df$KitchenQual <- as.numeric(dplyr::recode(clean.df$KitchenQual,
+  "Po" = 1,
+  "Fa" = 2,
+  "TA" = 3,
+  "Gd" = 4,
+  "Ex" = 5
+))
+
+#GarageFinish
+clean.df$GarageFinish <- as.numeric(dplyr::recode(as.character(clean.df$GarageFinish),
+  "NA" = 0,
+  "Unf" = 1,
+  "RFn" = 2,
+  "Fin" = 3
+))
+
+#GarageQual
+clean.df$GarageQual <- as.numeric(dplyr::recode(as.character(clean.df$GarageQual),
+  "NA" = 0,
+  "Po" = 1,
+  "Fa" = 2,
+  "TA" = 3,
+  "Gd" = 4,
+  "Ex" = 5
+))
+
+#GarageCond
+clean.df$GarageCond <- as.numeric(dplyr::recode(as.character(clean.df$GarageCond),
+  "NA" = 0,
+  "Po" = 1,
+  "Fa" = 2,
+  "TA" = 3,
+  "Gd" = 4,
+  "Ex" = 5
+))
+
+#BsmtFinType1
+clean.df$BsmtFinType1 <- as.numeric(dplyr::recode(as.character(clean.df$BsmtFinType1),
+  "NA" = 0,
+  "Unf" = 1,
+  "LwQ" = 2,
+  "Rec" = 3,
+  "BLQ" = 4,
+  "ALQ" = 5,
+  "GLQ" = 6
+))
+
+#Convert Functional to Numerical
+clean.df$Functional <- as.numeric(dplyr::recode(as.character(clean.df$Functional),
+  "Sal" = 0,
+  "Sev" = 0,
+  "Maj2" = 1,
+  "Maj1" = 1,
+  "Mod" = 1,
+  "Min2" = 2,
+  "Min1" = 2,
+  "Typ" = 3
+))
+```
+
+
+Test for Redundant Variables
+```{r}
+round(prop.table(table(RoofMatl= clean.df$RoofMatl)) * 100, 2)
+
+round(prop.table(table(LandContour = clean.df$LandContour)) * 100, 2)
+
+round(prop.table(table(Condition1 = clean.df$Condition1)) * 100, 2)
+
+round(prop.table(table(RoofStyle = clean.df$RoofStyle)) * 100, 2)
+
+round(prop.table(table(MasVnrType = clean.df$MasVnrType)) * 100, 2)
+
+round(prop.table(table(ExterCond = clean.df$ExterCond)) * 100, 2)
+
+round(prop.table(table(BsmtCond = clean.df$BsmtCond)) * 100, 2)
+
+round(prop.table(table(BsmtExposure = clean.df$BsmtExposure)) * 100, 2)
+
+round(prop.table(table(Heating = clean.df$Heating)) * 100, 2)
+
+round(prop.table(table(HeatingQC = clean.df$HeatingQC)) * 100, 2)
+
+round(prop.table(table(CentralAir = clean.df$CentralAir)) * 100, 2)
+
+round(prop.table(table(Electrical = clean.df$Electrical)) * 100, 2)
+
+round(prop.table(table(Functional = clean.df$Functional)) * 100, 2)
+
+round(prop.table(table(GarageType = clean.df$GarageType)) * 100, 2)
+
+round(prop.table(table(PavedDrive = clean.df$PavedDrive)) * 100, 2)
+
+round(prop.table(table(SaleType = clean.df$SaleType)) * 100, 2)
+
+round(prop.table(table(Exterior1st = clean.df$Exterior1st)) * 100, 2)
+
+round(prop.table(table(Exterior2nd = clean.df$Exterior2nd)) * 100, 2)
+
+round(prop.table(table(Fireplaces = clean.df$Fireplaces)) * 100, 2)
+
+
+```
+
+Group rare Variable Categories into "Other" using <3% Threshold  (Not Used)
+```{r}
+#Exterior1st
+freq <- prop.table(table(clean.df$Exterior1st))
+rare <- names(freq[freq < 0.03])
+clean.df$Exterior1st <- ifelse(clean.df$Exterior1st %in% rare,
+                               "Other",
+                               clean.df$Exterior1st)
+
+#Exterior2nd
+freq <- prop.table(table(clean.df$Exterior2nd))
+rare <- names(freq[freq < 0.03])
+clean.df$Exterior2nd <- ifelse(clean.df$Exterior2nd %in% rare,
+                               "Other",
+                               clean.df$Exterior2nd)
+
+#MSZoning
+freq <- prop.table(table(clean.df$MSZoning))
+rare <- names(freq[freq < 0.03])
+clean.df$MSZoning <- ifelse(clean.df$MSZoning %in% rare,
+                               "Other",
+                               clean.df$MSZoning)
+
+
+#LotShape
+freq <- prop.table(table(clean.df$LotShape))
+rare <- names(freq[freq < 0.03])
+clean.df$LotShape <- ifelse(clean.df$LotShape %in% rare,
+                               "Other",
+                               clean.df$LotShape)
+
+#LotConfig
+freq <- prop.table(table(clean.df$LotConfig))
+rare <- names(freq[freq < 0.03])
+ clean.df$LotConfig <- ifelse(clean.df$LotConfig %in% rare,
+                               "Other",
+                               clean.df$LotConfig)
+
+#RoofStyle
+freq <- prop.table(table(clean.df$RoofStyle))
+rare <- names(freq[freq < 0.03])
+clean.df$RoofStyle <- ifelse(clean.df$RoofStyle %in% rare,
+                               "Other",
+                               clean.df$RoofStyle)
+
+#RoofStyle
+freq <- prop.table(table(clean.df$RoofStyle))
+rare <- names(freq[freq < 0.03])
+clean.df$RoofStyle <- ifelse(clean.df$RoofStyle %in% rare,
+                               "Other",
+                               clean.df$RoofStyle)
+
+#MasVnrType
+freq <- prop.table(table(clean.df$MasVnrType))
+rare <- names(freq[freq < 0.03])
+clean.df$MasVnrType <- ifelse(clean.df$MasVnrType %in% rare,
+                               "Other",
+                               clean.df$MasVnrType)
+
+#Foundation
+freq <- prop.table(table(clean.df$Foundation))
+rare <- names(freq[freq < 0.03])
+clean.df$Foundation <- ifelse(clean.df$Foundation %in% rare,
+                               "Other",
+                               clean.df$Foundation)
+
+
+#Foundation
+freq <- prop.table(table(clean.df$Foundation))
+rare <- names(freq[freq < 0.03])
+clean.df$Foundation <- ifelse(clean.df$Foundation %in% rare,
+                               "Other",
+                               clean.df$Foundation)
+
+#GarageType
+freq <- prop.table(table(clean.df$GarageType))
+rare <- names(freq[freq < 0.03])
+clean.df$GarageType <- ifelse(clean.df$GarageType %in% rare,
+                               "Other",
+                               clean.df$GarageType)
+
+
+#SaleCondition
+freq <- prop.table(table(clean.df$SaleCondition))
+rare <- names(freq[freq < 0.03])
+clean.df$SaleCondition <- ifelse(clean.df$SaleCondition %in% rare,
+                               "Other",
+                               clean.df$SaleCondition)
+
+#SaleCondition
+freq <- prop.table(table(clean.df$SaleCondition))
+rare <- names(freq[freq < 0.03])
+clean.df$SaleCondition <- ifelse(clean.df$SaleCondition %in% rare,
+                               "Other",
+                               clean.df$SaleCondition)
+
+
+```
+
+
+Test for Redundant Variables
+```{r}
+round(prop.table(table(RoofMatl= clean.df$RoofMatl)) * 100, 2)
+
+round(prop.table(table(LandContour = clean.df$LandContour)) * 100, 2)
+
+round(prop.table(table(Condition1 = clean.df$Condition1)) * 100, 2)
+
+round(prop.table(table(RoofStyle = clean.df$RoofStyle)) * 100, 2)
+
+round(prop.table(table(MasVnrType = clean.df$MasVnrType)) * 100, 2)
+
+round(prop.table(table(ExterCond = clean.df$ExterCond)) * 100, 2)
+
+round(prop.table(table(BsmtCond = clean.df$BsmtCond)) * 100, 2)
+
+round(prop.table(table(BsmtExposure = clean.df$BsmtExposure)) * 100, 2)
+
+round(prop.table(table(Heating = clean.df$Heating)) * 100, 2)
+
+round(prop.table(table(HeatingQC = clean.df$HeatingQC)) * 100, 2)
+
+round(prop.table(table(CentralAir = clean.df$CentralAir)) * 100, 2)
+
+round(prop.table(table(Electrical = clean.df$Electrical)) * 100, 2)
+
+round(prop.table(table(Functional = clean.df$Functional)) * 100, 2)
+
+round(prop.table(table(GarageType = clean.df$GarageType)) * 100, 2)
+
+round(prop.table(table(PavedDrive = clean.df$PavedDrive)) * 100, 2)
+
+round(prop.table(table(SaleType = clean.df$SaleType)) * 100, 2)
+
+round(prop.table(table(Exterior1st = clean.df$Exterior1st)) * 100, 2)
+
+round(prop.table(table(Exterior2nd = clean.df$Exterior2nd)) * 100, 2)
+
+round(prop.table(table(Fireplaces = clean.df$Fireplaces)) * 100, 2)
+```
+
+
+Remove Redundant Variables Within 85% Threshold
+```{r}
+redundant.vars <- c(
+  "BsmtFinSF1", "BsmtUnfSF", "Condition1", "LandContour", "RoofMatl", "Heating", "CentralAir", "Electrical", "PavedDrive", "X1stFlrSF", "X2ndFlrSF", "Exterior2nd"
+)
+
+clean.df <- clean.df[, !(names(clean.df) %in% redundant.vars)]
+```
+
+```{r}
+clean.df
+```
+
+
+Grouping (Not Used later for some models)
+```{r}
+#Group all Quality Variables
+clean.df$TotalQuality <- round((clean.df$ExterQual +
+  clean.df$BsmtQual +
+  clean.df$KitchenQual +
+  clean.df$GarageQual +
+  clean.df$OverallQual +
+  clean.df$HeatingQC)/6, 2)
+
+#Group all Condition Variables
+clean.df$TotalCond <- round((clean.df$OverallCond +
+  clean.df$ExterCond +
+  clean.df$BsmtCond +
+  clean.df$GarageCond)/4, 2)
+
+
+
+#TotBath
+clean.df$TotBath <- clean.df$BsmtFullBath +
+  ((clean.df$HalfBath)/2) +
+  clean.df$FullBath 
+
+
+
+```
+
+
+Implement PCA to Weigh Variables And Group
+```{r}
+
+area.vars <- clean.df[, c("LotArea", "GarageArea",
+                          "GrLivArea", "TotalBsmtSF")]
+
+
+pca.area <- prcomp(area.vars, scale. = TRUE)
+
+
+clean.df$TotArea <- pca.area$x[,1]
+
+
+pca.area$rotation
+
+
+
+
+
+area.v <- clean.df[, c("WoodDeckSF", "OpenPorchSF",
+                          "EnclosedPorch", "ScreenPorch", "PoolArea")]
+
+
+pca.a <- prcomp(area.v, scale. = TRUE)
+
+
+clean.df$TotOutAmenSF <- pca.a$x[,1]
+
+
+pca.a$rotation
+```
+
+```{r}
+# PCA Visual for Total Area
+
+library(ggplot2)
+
+# Variables used for TotArea PCA
+area.vars <- clean.df[, c("TotalBsmtSF", "X1stFlrSF", "X2ndFlrSF", "GrLivArea")]
+
+# Run PCA
+area.pca <- prcomp(area.vars, center = TRUE, scale. = TRUE)
+
+# Variance explained
+area.var.explained <- area.pca$sdev^2 / sum(area.pca$sdev^2)
+
+area.scree <- data.frame(
+  PC = paste0("PC", 1:length(area.var.explained)),
+  Variance_Explained = area.var.explained
+)
+
+ggplot(area.scree, aes(x = PC, y = Variance_Explained)) +
+  geom_col() +
+  geom_text(
+    aes(label = paste0(round(Variance_Explained * 100, 1), "%")),
+    vjust = -0.5
+  ) +
+  labs(
+    title = "PCA Scree Plot for Total Area Variables",
+    x = "Principal Component",
+    y = "Proportion of Variance Explained"
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r}
+clean.df
+```
+
+create
+
+Remove Grouped Variables
+```{r}
+grouped.vars <- c(
+  "ExterQual", "BsmtQual", "KitchenQual", "GarageQual", "OverallQual", "HeatingQC", "OverallCond", "ExterCond", "BsmtCond", "GarageCond", "WoodDeckSF", "OpenPorchSF", "EnclosedPorch", "ScreenPorch", "PoolArea", "BsmtFullBath", "FullBath", "HalfBath", "LotArea", "GarageArea", "GrLivArea", "TotalBsmtSF"
+)
+
+clean.df <- clean.df[, !(names(clean.df) %in% grouped.vars)]
+```
+
+
+```{r}
+write.csv(clean.df, "~/Downloads/clean.df.csv", row.names = FALSE)
+```
+
+```{r}
+hist(clean.df$SalePrice,
+     main = "Distribution of Sale Price",
+     xlab = "Sale Price",
+     col = "lightblue")
+```
+
+
+```{r}
+hist(log(clean.df$SalePrice),
+     main = "Histogram of Log Sale Price",
+     xlab = "Log Sale Price",
+     col = "lightblue",
+     border = "black")
+```
+
+Perform Log Transformation on Data
+```{r}
+clean.df$LogSalePrice <- log(clean.df$SalePrice)
+```
+
+Split Data Into Train and Valid Using 80-20
+```{r}
+set.seed(123)
+
+train_index <- sample(1:nrow(clean.df), 0.8 * nrow(clean.df))
+
+train.df <- clean.df[train_index, ]
+valid.df <- clean.df[-train_index, ]
+```
+
+
+```{r}
+train.df <- train.df %>%
+  mutate(across(where(is.character), as.factor))
+
+model <- lm(LogSalePrice ~ ., data = train.df)
+
+summary(model)
+anova(model)
+```
+
+
+
+Create Linear Regression Model for Training Set
+```{r}
+model <- lm(
+  LogSalePrice ~ MSZoning + Neighborhood + YearRemodAdd +
+    Exterior1st + Foundation +
+    BsmtFinType1 + BedroomAbvGr + TotRmsAbvGrd +
+    Fireplaces + GarageCars + SaleCondition +
+    GarageCars_sq + TotalQuality + TotalCond +
+     TotBath + TotArea,
+  data = train.df
+)
+
+summary(model)
+```
+
+
+```{r}
+library(car)
+
+Anova(model, type = 2)
+```
+
+```{r}
+formula(model)
+```
+
+
+
+Remove insignifcant variables according to model
+```{r}
+insig <- c(
+  "KitchenAbvGr", "TotOutAmenSF", "GarageYrBlt", "TotBath", "SalePrice", "SaleType"
+)
+
+train.df <- train.df[, !(names(train.df) %in% insig)]
+```
+
+Training set prediction
+```{r}
+train.pred.log <- predict(model, newdata = train.df)
+
+train.results <- data.frame(
+  Actual_SalePrice = exp(train.df$LogSalePrice),
+  Predicted_SalePrice = exp(train.pred.log)
+)
+
+train.results
+```
+
+```{r}
+train.rmse <- sqrt(mean((train.results$Actual_SalePrice - train.results$Predicted_SalePrice)^2))
+train.rmse
+```
+
+
+```{r}
+remove_vars <- c(
+  "KitchenAbvGr", "TotOutAmenSF", "GarageYrBlt", 
+  "TotBath", "SalePrice", "SaleType"
+)
+
+valid.df <- valid.df[, !(names(valid.df) %in% remove_vars)]
+```
+
+
+```{r}
+valid.pred.log <- predict(model, newdata = valid.df)
+
+valid.results <- data.frame(
+  Actual_SalePrice = exp(valid.df$LogSalePrice),
+  Predicted_SalePrice = exp(valid.pred.log)
+)
+
+valid.rmse <- sqrt(mean((valid.results$Actual_SalePrice - valid.results$Predicted_SalePrice)^2))
+valid.rmse
+```
+
+```{r}
+mean(clean.df$SalePrice)
+```
+
+
+
+
+
+Create CSV File for Cleaned Training Data
+```{r}
+library(readr)
+clean <- write_csv(clean.df, "clean.df.csv")
+
+clean.df <- read.csv("~/Downloads/clean.df.csv")
+```
+
+```{r}
+head(clean.df)
+```
+
+
+
+
+
+
+Quantile Regression Model
+```{r}
+install.packages("quantreg")
+library(quantreg)
+```
+
+
+```{r}
+library(quantreg)
+library(dplyr)
+
+train.df <- train.df %>%
+  mutate(across(where(is.character), as.factor))
+
+valid.df <- valid.df %>%
+  mutate(across(where(is.character), as.factor))
+
+train.qr <- train.df %>%
+  select(-SalePrice)
+
+valid.qr <- valid.df %>%
+  select(-SalePrice)
+
+qr_formula <- LogSalePrice ~ MSZoning + Neighborhood + YearBuilt + YearRemodAdd +
+  LotFrontage + LotShape + LotConfig + Exterior1st + Foundation +
+  BsmtExposure + BsmtFinType1 + BedroomAbvGr + TotRmsAbvGrd +
+  Functional + Fireplaces + GarageType + GarageFinish +
+  GarageCars + GarageCars_sq + SaleCondition +
+  TotalQuality + TotalCond + TotBath + TotArea
+
+qr_model_50 <- rq(
+  qr_formula,
+  data = train.qr,
+  tau = 0.50,
+  method = "fn"
+)
+
+qr_model_50
+```
+
+```{r}
+
+quant.pred.log <- predict(qr_model_50, newdata = valid.qr)
+
+quant.pred.price <- exp(quant.pred.log)
+
+actual.valid.price <- exp(valid.qr$LogSalePrice)
+
+quant.valid.rmse <- sqrt(mean((actual.valid.price - quant.pred.price)^2))
+
+quant.valid.rmse
+```
+
+```{r}
+library(glmnet)
+library(dplyr)
+
+train.df <- train.df %>%
+  mutate(across(where(is.character), as.factor))
+
+valid.df <- valid.df %>%
+  mutate(across(where(is.character), as.factor))
+
+train.reg <- train.df %>%
+  select(-SalePrice)
+
+valid.reg <- valid.df %>%
+  select(-SalePrice)
+
+reg_formula <- LogSalePrice ~ MSZoning + Neighborhood +
+  YearBuilt + YearRemodAdd + HouseAge + RemodAge +
+  LotArea + LotFrontage + LotShape + LotConfig +
+  Exterior1st + Exterior2nd + MasVnrArea +
+  Foundation + BsmtQual + BsmtCond + BsmtExposure + BsmtFinType1 +
+  TotalBsmtSF + X1stFlrSF + X2ndFlrSF + GrLivArea + TotalSF +
+  FullBath + HalfBath + BsmtFullBath + BsmtHalfBath + TotalBathrooms +
+  BedroomAbvGr + KitchenQual + TotRmsAbvGrd + Functional +
+  Fireplaces + FireplaceQu + GarageType + GarageFinish +
+  GarageCars + GarageArea + GarageAge +
+  HasGarage + HasBasement + HasFireplace +
+  WoodDeckSF + OpenPorchSF + EnclosedPorch + ScreenPorch +
+  SaleCondition
+
+train.reg$dataset <- "train"
+valid.reg$dataset <- "valid"
+
+combined.reg <- rbind(train.reg, valid.reg)
+
+x.combined <- model.matrix(reg_formula, data = combined.reg)[, -1]
+
+x.train <- x.combined[combined.reg$dataset == "train", ]
+x.valid <- x.combined[combined.reg$dataset == "valid", ]
+
+y.train <- combined.reg$LogSalePrice[combined.reg$dataset == "train"]
+y.valid <- combined.reg$LogSalePrice[combined.reg$dataset == "valid"]
+```
+
+```{r}
+set.seed(123)
+
+lasso.cv <- cv.glmnet(
+  x = x.train,
+  y = y.train,
+  alpha = 1,
+  nfolds = 10
+)
+
+lasso.best.lambda <- lasso.cv$lambda.min
+
+lasso.model <- glmnet(
+  x = x.train,
+  y = y.train,
+  alpha = 1,
+  lambda = lasso.best.lambda
+)
+
+lasso.pred.log <- predict(
+  lasso.model,
+  s = lasso.best.lambda,
+  newx = x.valid
+)
+
+lasso.pred.price <- exp(lasso.pred.log)
+actual.valid.price <- exp(y.valid)
+
+lasso.valid.rmse <- sqrt(mean((actual.valid.price - lasso.pred.price)^2))
+lasso.valid.rmse
+```
+
+```{r}
+set.seed(123)
+
+ridge.cv <- cv.glmnet(
+  x = x.train,
+ 
+   y = y.train,
+  alpha = 0,
+  nfolds = 10
+)
+
+ridge.best.lambda <- ridge.cv$lambda.min
+
+ridge.model <- glmnet(
+  x = x.train,
+  y = y.train,
+  alpha = 0,
+  lambda = ridge.best.lambda
+)
+
+ridge.pred.log <- predict(
+  ridge.model,
+  s = ridge.best.lambda,
+  newx = x.valid
+)
+
+ridge.pred.price <- exp(ridge.pred.log)
+
+ridge.valid.rmse <- sqrt(mean((actual.valid.price - ridge.pred.price)^2))
+ridge.valid.rmse
+```
+
+
+```{r}
+
+rmse.comparison <- data.frame(
+  Model = c(
+    "Linear Regression",
+    "Lasso Regression",
+    "Ridge Regression",
+    "Quantile Regression"
+  ),
+  Validation_RMSE = c(
+    valid.rmse,
+    lasso.valid.rmse,
+    ridge.valid.rmse,
+    quant.valid.rmse
+  )
+)
+
+rmse.comparison <- rmse.comparison[order(rmse.comparison$Validation_RMSE), ]
+
+rmse.comparison
+```
+
+```{r}
+
+library(dplyr)
+library(glmnet)
+library(quantreg)
+
+vars.to.readd <- c(
+  "OverallQual", "OverallCond", "LotArea", "MasVnrArea",
+  "BsmtQual", "BsmtCond", "TotalBsmtSF", "YrSold",
+  "X1stFlrSF", "X2ndFlrSF", "GrLivArea",
+  "FullBath", "HalfBath", "BsmtFullBath", "BsmtHalfBath",
+  "KitchenQual", "GarageArea", "GarageYrBlt",
+  "WoodDeckSF", "OpenPorchSF", "EnclosedPorch", "ScreenPorch",
+  "Exterior2nd", "FireplaceQu"
+)
+for (v in vars.to.readd) {
+  if (!(v %in% names(clean.df)) && v %in% names(df)) {
+    clean.df[[v]] <- df[[v]]
+  }
+}
+
+char.vars <- names(clean.df)[sapply(clean.df, is.character)]
+
+for (v in char.vars) {
+  clean.df[[v]][is.na(clean.df[[v]])] <- "None"
+}
+
+num.vars <- names(clean.df)[sapply(clean.df, is.numeric)]
+
+for (v in num.vars) {
+  clean.df[[v]][is.na(clean.df[[v]])] <- median(clean.df[[v]], na.rm = TRUE)
+}
+
+
+clean.df <- clean.df %>%
+  mutate(
+    TotalSF = TotalBsmtSF + X1stFlrSF + X2ndFlrSF,
+    
+    TotalBathrooms = FullBath +
+      0.5 * HalfBath +
+      BsmtFullBath +
+      0.5 * BsmtHalfBath,
+    
+    HouseAge = YrSold - YearBuilt,
+    RemodAge = YrSold - YearRemodAdd,
+    GarageAge = YrSold - GarageYrBlt,
+    
+    HasGarage = ifelse(GarageArea > 0, 1, 0),
+    HasBasement = ifelse(TotalBsmtSF > 0, 1, 0),
+    HasFireplace = ifelse(Fireplaces > 0, 1, 0),
+    
+    GarageCars_sq = GarageCars^2,
+    LogSalePrice = log(SalePrice)
+  )
+
+clean.df$HouseAge[clean.df$HouseAge < 0] <- 0
+clean.df$RemodAge[clean.df$RemodAge < 0] <- 0
+clean.df$GarageAge[clean.df$GarageAge < 0] <- 0
+
+clean.df <- clean.df %>%
+  mutate(across(where(is.character), as.factor))
+
+set.seed(123)
+
+train.index <- sample(
+  1:nrow(clean.df),
+  size = 0.80 * nrow(clean.df)
+)
+
+train.df <- clean.df[train.index, ]
+valid.df <- clean.df[-train.index, ]
+
+
+model_formula <- LogSalePrice ~ MSZoning + Neighborhood +
+  OverallQual + OverallCond +
+  YearBuilt + YearRemodAdd + HouseAge + RemodAge +
+  LotArea + LotFrontage + LotShape + LotConfig +
+  Exterior1st + MasVnrArea +
+  Foundation + BsmtQual + BsmtCond + BsmtExposure + BsmtFinType1 +
+  TotalBsmtSF + X1stFlrSF + X2ndFlrSF + GrLivArea + TotalSF +
+  FullBath + HalfBath + BsmtFullBath + BsmtHalfBath + TotalBathrooms +
+  BedroomAbvGr + KitchenQual + TotRmsAbvGrd + Functional +
+  Fireplaces + FireplaceQu + GarageType + GarageFinish +
+  GarageCars + GarageCars_sq + GarageArea + GarageAge +
+  HasGarage + HasBasement + HasFireplace +
+  WoodDeckSF + OpenPorchSF + EnclosedPorch + ScreenPorch +
+  SaleCondition
+
+lm.model <- lm(
+  model_formula,
+  data = train.df
+)
+
+lm.pred.log <- predict(lm.model, newdata = valid.df)
+
+lm.pred.price <- exp(lm.pred.log)
+
+actual.valid.price <- valid.df$SalePrice
+
+lm.valid.rmse <- sqrt(mean((actual.valid.price - lm.pred.price)^2))
+
+train.reg <- train.df %>%
+  select(-SalePrice)
+
+valid.reg <- valid.df %>%
+  select(-SalePrice)
+
+train.reg$dataset <- "train"
+valid.reg$dataset <- "valid"
+
+combined.reg <- rbind(train.reg, valid.reg)
+
+x.combined <- model.matrix(model_formula, data = combined.reg)[, -1]
+
+x.train <- x.combined[combined.reg$dataset == "train", ]
+x.valid <- x.combined[combined.reg$dataset == "valid", ]
+
+y.train <- combined.reg$LogSalePrice[combined.reg$dataset == "train"]
+y.valid <- combined.reg$LogSalePrice[combined.reg$dataset == "valid"]
+
+actual.valid.price <- exp(y.valid)
+
+set.seed(123)
+
+lasso.cv <- cv.glmnet(
+  x = x.train,
+  y = y.train,
+  alpha = 1,
+  nfolds = 10
+)
+
+lasso.pred.log <- predict(
+  lasso.cv,
+  s = "lambda.min",
+  newx = x.valid
+)
+
+lasso.pred.price <- exp(lasso.pred.log)
+
+lasso.valid.rmse <- sqrt(mean((actual.valid.price - lasso.pred.price)^2))
+
+set.seed(123)
+
+ridge.cv <- cv.glmnet(
+  x = x.train,
+  y = y.train,
+  alpha = 0,
+  nfolds = 10
+)
+
+ridge.pred.log <- predict(
+  ridge.cv,
+  s = "lambda.min",
+  newx = x.valid
+)
+
+ridge.pred.price <- exp(ridge.pred.log)
+
+ridge.valid.rmse <- sqrt(mean((actual.valid.price - ridge.pred.price)^2))
+
+
+train.qr <- train.df %>%
+  select(-SalePrice)
+
+valid.qr <- valid.df %>%
+  select(-SalePrice)
+
+quant.model <- rq(
+  model_formula,
+  data = train.qr,
+  tau = 0.50,
+  method = "fn"
+)
+
+quant.pred.log <- predict(
+  quant.model,
+  newdata = valid.qr
+)
+
+quant.pred.price <- exp(quant.pred.log)
+
+quant.valid.rmse <- sqrt(mean((actual.valid.price - quant.pred.price)^2))
+
+rmse.comparison <- data.frame(
+  Model = c(
+    "Linear Regression",
+    "Lasso Regression",
+    "Ridge Regression",
+    "Quantile Regression"
+  ),
+  Validation_RMSE = c(
+    lm.valid.rmse,
+    lasso.valid.rmse,
+    ridge.valid.rmse,
+    quant.valid.rmse
+  )
+)
+
+rmse.comparison <- rmse.comparison[order(rmse.comparison$Validation_RMSE), ]
+
+rmse.comparison
+
+best.model <- rmse.comparison[1, ]
+
+cat(
+  "The best model is",
+  best.model$Model,
+  "with a validation RMSE of",
+  round(best.model$Validation_RMSE, 2)
+)
+```
+
+```{r}
+quant.pred.log <- predict(
+  quant.model,
+  newdata = valid.qr
+)
+
+quant.pred.log <- pmin(quant.pred.log, log(max(train.df$SalePrice) * 3))
+quant.pred.log <- pmax(quant.pred.log, log(min(train.df$SalePrice) * 0.5))
+
+quant.pred.price <- exp(quant.pred.log)
+
+actual.valid.price <- valid.df$SalePrice
+
+quant.valid.rmse <- sqrt(mean((actual.valid.price - quant.pred.price)^2))
+
+quant.valid.rmse
+```
+
+```{r}
+rmse.comparison <- data.frame(
+  Model = c(
+    "Linear Regression",
+    "Lasso Regression",
+    "Ridge Regression",
+    "Quantile Regression"
+  ),
+  Validation_RMSE = c(
+    lm.valid.rmse,
+    lasso.valid.rmse,
+    ridge.valid.rmse,
+    quant.valid.rmse
+  )
+)
+
+rmse.comparison <- rmse.comparison[order(rmse.comparison$Validation_RMSE), ]
+
+rmse.comparison
+```
+
+```{r}
+quant_formula <- LogSalePrice ~ Neighborhood +
+  OverallQual + OverallCond +
+  GrLivArea + TotalSF +
+  TotalBathrooms +
+  GarageCars + GarageArea +
+  YearBuilt + YearRemodAdd +
+  HouseAge + RemodAge +
+  TotalBsmtSF +
+  Fireplaces +
+  LotArea
+
+train.qr <- train.df %>%
+  select(-SalePrice)
+
+valid.qr <- valid.df %>%
+  select(-SalePrice)
+
+quant.model <- rq(
+  quant_formula,
+  data = train.qr,
+  tau = 0.50,
+  method = "fn"
+)
+
+quant.pred.log <- predict(
+  quant.model,
+  newdata = valid.qr
+)
+
+quant.pred.price <- exp(quant.pred.log)
+
+actual.valid.price <- valid.df$SalePrice
+
+quant.valid.rmse <- sqrt(mean((actual.valid.price - quant.pred.price)^2))
+
+quant.valid.rmse
+```
+
+```{r}
+rmse.comparison <- data.frame(
+  Model = c(
+    "Linear Regression",
+    "Lasso Regression",
+    "Ridge Regression",
+    "Quantile Regression"
+  ),
+  Validation_RMSE = c(
+    lm.valid.rmse,
+    lasso.valid.rmse,
+    ridge.valid.rmse,
+    quant.valid.rmse
+  )
+)
+
+rmse.comparison <- rmse.comparison[order(rmse.comparison$Validation_RMSE), ]
+
+rmse.comparison
+```
+```{r}
+clean.df
+```
+
+```{r}
+library(dplyr)
+library(glmnet)
+library(quantreg)
+
+vars.to.readd <- c(
+  "OverallQual", "OverallCond", "LotArea", "LotFrontage",
+  "MSZoning", "Neighborhood", "LotShape", "LotConfig",
+  "Exterior1st", "Foundation", "BsmtExposure", "BsmtFinType1",
+  "BedroomAbvGr", "TotRmsAbvGrd", "Functional", "Fireplaces",
+  "GarageType", "GarageFinish", "GarageCars", "GarageArea",
+  "SaleCondition", "YearBuilt", "YearRemodAdd", "YrSold",
+  "TotalBsmtSF", "X1stFlrSF", "X2ndFlrSF", "GrLivArea",
+  "WoodDeckSF", "OpenPorchSF", "EnclosedPorch", "ScreenPorch",
+  "FullBath", "HalfBath", "BsmtFullBath", "BsmtHalfBath",
+  "KitchenQual", "BsmtQual"
+)
+
+for (v in vars.to.readd) {
+  if (!(v %in% names(clean.df)) && v %in% names(df)) {
+    clean.df[[v]] <- df[[v]]
+  }
+}
+
+char.vars <- names(clean.df)[sapply(clean.df, is.character)]
+
+for (v in char.vars) {
+  clean.df[[v]][is.na(clean.df[[v]])] <- "None"
+}
+
+num.vars <- names(clean.df)[sapply(clean.df, is.numeric)]
+
+for (v in num.vars) {
+  clean.df[[v]][is.na(clean.df[[v]])] <- median(clean.df[[v]], na.rm = TRUE)
+}
+
+clean.df <- clean.df %>%
+  mutate(
+    TotalBathrooms = FullBath +
+      0.5 * HalfBath +
+      BsmtFullBath +
+      0.5 * BsmtHalfBath,
+    
+    HouseAge = YrSold - YearBuilt,
+    RemodAge = YrSold - YearRemodAdd,
+    
+    HasGarage = ifelse(GarageArea > 0, 1, 0),
+    HasBasement = ifelse(TotalBsmtSF > 0, 1, 0),
+     HasFireplace = ifelse(Fireplaces > 0, 1, 0),
+    
+    GarageCars_sq = GarageCars^2,
+    LogSalePrice = log(SalePrice)
+  )
+
+clean.df$HouseAge[clean.df$HouseAge < 0] <- 0
+clean.df$RemodAge[clean.df$RemodAge < 0] <- 0
+
+clean.df <- clean.df %>%
+  mutate(across(where(is.character), as.factor))
+
+set.seed(123)
+
+train.index <- sample(
+  1:nrow(clean.df),
+  size = 0.80 * nrow(clean.df)
+)
+
+train.df <- clean.df[train.index, ]
+valid.df <- clean.df[-train.index, ]
+
+area.vars <- c(
+  "TotalBsmtSF",
+  "X1stFlrSF",
+  "X2ndFlrSF",
+  "GrLivArea"
+)
+
+area.pca <- prcomp(
+  train.df[, area.vars],
+  center = TRUE,
+  scale. = TRUE
+)
+
+train.area.pca <- predict(area.pca, newdata = train.df[, area.vars])
+valid.area.pca <- predict(area.pca, newdata = valid.df[, area.vars])
+
+train.df$TotArea_PC1 <- train.area.pca[, 1]
+train.df$TotArea_PC2 <- train.area.pca[, 2]
+
+valid.df$TotArea_PC1 <- valid.area.pca[, 1]
+valid.df$TotArea_PC2 <- valid.area.pca[, 2]
+
+outdoor.vars <- c(
+  "WoodDeckSF",
+  "OpenPorchSF",
+  "EnclosedPorch",
+  "ScreenPorch"
+)
+
+outdoor.pca <- prcomp(
+  train.df[, outdoor.vars],
+  center = TRUE,
+  scale. = TRUE
+)
+
+train.outdoor.pca <- predict(outdoor.pca, newdata = train.df[, outdoor.vars])
+valid.outdoor.pca <- predict(outdoor.pca, newdata = valid.df[, outdoor.vars])
+
+train.df$TotOutAmen_PC1 <- train.outdoor.pca[, 1]
+train.df$TotOutAmen_PC2 <- train.outdoor.pca[, 2]
+
+valid.df$TotOutAmen_PC1 <- valid.outdoor.pca[, 1]
+valid.df$TotOutAmen_PC2 <- valid.outdoor.pca[, 2]
+
+pca_formula <- LogSalePrice ~ MSZoning + Neighborhood +
+  OverallQual + OverallCond +
+  YearBuilt + YearRemodAdd + HouseAge + RemodAge +
+  LotArea + LotFrontage + LotShape + LotConfig +
+  Exterior1st + Foundation +
+  BsmtQual + BsmtExposure + BsmtFinType1 +
+  BedroomAbvGr + KitchenQual + TotRmsAbvGrd + Functional +
+  Fireplaces + GarageType + GarageFinish +
+  GarageCars + GarageCars_sq + GarageArea +
+  TotalBathrooms + HasGarage + HasBasement + HasFireplace +
+  TotArea_PC1 + TotArea_PC2 +
+  TotOutAmen_PC1 + TotOutAmen_PC2 +
+  SaleCondition
+
+train.model <- train.df %>%
+  select(-SalePrice)
+
+valid.model <- valid.df %>%
+  select(-SalePrice)
+
+train.model$dataset <- "train"
+valid.model$dataset <- "valid"
+
+combined.model <- rbind(train.model, valid.model)
+
+x.combined <- model.matrix(pca_formula, data = combined.model)[, -1]
+
+x.train <- x.combined[combined.model$dataset == "train", ]
+x.valid <- x.combined[combined.model$dataset == "valid", ]
+
+y.train <- combined.model$LogSalePrice[combined.model$dataset == "train"]
+y.valid <- combined.model$LogSalePrice[combined.model$dataset == "valid"]
+
+actual.valid.price <- exp(y.valid)
+
+x.train.df <- as.data.frame(x.train)
+x.valid.df <- as.data.frame(x.valid)
+
+linear.pca.model <- lm(
+  y.train ~ .,
+  data = x.train.df
+)
+
+linear.pca.pred.log <- predict(
+  linear.pca.model,
+  newdata = x.valid.df
+)
+
+linear.pca.pred.price <- exp(linear.pca.pred.log)
+
+linear.pca.rmse <- sqrt(mean((actual.valid.price - linear.pca.pred.price)^2))
+
+set.seed(123)
+
+lasso.pca.cv <- cv.glmnet(
+  x = x.train,
+  y = y.train,
+  alpha = 1,
+  nfolds = 10
+)
+
+lasso.pca.pred.log <- predict(
+  lasso.pca.cv,
+  s = "lambda.min",
+  newx = x.valid
+)
+
+lasso.pca.pred.price <- exp(lasso.pca.pred.log)
+
+lasso.pca.rmse <- sqrt(mean((actual.valid.price - lasso.pca.pred.price)^2))
+
+set.seed(123)
+
+ridge.pca.cv <- cv.glmnet(
+  x = x.train,
+  y = y.train,
+  alpha = 0,
+  nfolds = 10
+)
+
+ridge.pca.pred.log <- predict(
+  ridge.pca.cv,
+  s = "lambda.min",
+  newx = x.valid
+)
+
+ridge.pca.pred.price <- exp(ridge.pca.pred.log)
+
+ridge.pca.rmse <- sqrt(mean((actual.valid.price - ridge.pca.pred.price)^2))
+
+quant.pca.model <- rq(
+  y.train ~ .,
+  data = x.train.df,
+  tau = 0.50,
+  method = "fn"
+)
+
+quant.pca.pred.log <- predict(
+  quant.pca.model,
+  newdata = x.valid.df
+)
+
+quant.pca.pred.price <- exp(quant.pca.pred.log)
+
+quant.pca.rmse <- sqrt(mean((actual.valid.price - quant.pca.pred.price)^2))
+
+pca.rmse.comparison <- data.frame(
+  Model = c(
+    "Linear Regression with PCA",
+    "Lasso Regression with PCA",
+    "Ridge Regression with PCA",
+    "Quantile Regression with PCA"
+  ),
+  Validation_RMSE = c(
+    linear.pca.rmse,
+    lasso.pca.rmse,
+    ridge.pca.rmse,
+    quant.pca.rmse
+  )
+)
+
+pca.rmse.comparison <- pca.rmse.comparison[
+  order(pca.rmse.comparison$Validation_RMSE),
+]
+
+pca.rmse.comparison
+
+best.pca.model <- pca.rmse.comparison[1, ]
+
+cat(
+  "The best PCA-based model is",
+  best.pca.model$Model,
+  "with a validation RMSE of",
+  round(best.pca.model$Validation_RMSE, 2)
+)
+
+quant.pca.model
+```
+
+```{r}
+calc_r2 <- function(actual, predicted) {
+  ss_res <- sum((actual - predicted)^2)
+  ss_tot <- sum((actual - mean(actual))^2)
+  r2 <- 1 - (ss_res / ss_tot)
+  return(r2)
+}
+
+linear.pca.r2 <- calc_r2(actual.valid.price, linear.pca.pred.price)
+lasso.pca.r2 <- calc_r2(actual.valid.price, lasso.pca.pred.price)
+ridge.pca.r2 <- calc_r2(actual.valid.price, ridge.pca.pred.price)
+quant.pca.r2 <- calc_r2(actual.valid.price, quant.pca.pred.price)
+
+pca.r2.comparison <- data.frame(
+  Model = c(
+    "Linear Regression with PCA",
+    "Lasso Regression with PCA",
+    "Ridge Regression with PCA",
+    "Quantile Regression with PCA"
+  ),
+  Validation_R2 = c(
+    linear.pca.r2,
+    lasso.pca.r2,
+    ridge.pca.r2,
+    quant.pca.r2
+  )
+)
+
+pca.r2.comparison <- pca.r2.comparison[
+  order(pca.r2.comparison$Validation_R2, decreasing = TRUE),
+]
+
+pca.r2.comparison
+```
+
+
+```{r}
+
+library(quantreg)
+library(ggplot2)
+library(dplyr)
+
+clean.df$GarageCars_sq <- clean.df$GarageCars^2
+clean.df$LogSalePrice <- log(clean.df$SalePrice)
+
+garage.quant.model <- rq(
+  LogSalePrice ~ GarageCars + GarageCars_sq,
+  data = clean.df,
+  tau = 0.50
+)
+
+summary(garage.quant.model)
+
+garage.pred.df <- data.frame(
+  GarageCars = seq(
+    min(clean.df$GarageCars, na.rm = TRUE),
+    max(clean.df$GarageCars, na.rm = TRUE),
+    length.out = 100
+  )
+)
+
+garage.pred.df$GarageCars_sq <- garage.pred.df$GarageCars^2
+
+garage.pred.df$Predicted_LogSalePrice <- predict(
+  garage.quant.model,
+  newdata = garage.pred.df
+)
+
+garage.pred.df$Predicted_SalePrice <- exp(garage.pred.df$Predicted_LogSalePrice)
+
+coef.garage <- coef(garage.quant.model)
+
+turning.point <- -coef.garage["GarageCars"] / (2 * coef.garage["GarageCars_sq"])
+
+turning.point
+```
+
+```{r}
+
+ggplot(clean.df, aes(x = GarageCars, y = SalePrice)) +
+  geom_jitter(alpha = 0.35, width = 0.15, height = 0) +
+  geom_line(
+    data = garage.pred.df,
+    aes(x = GarageCars, y = Predicted_SalePrice),
+    linewidth = 1.2
+  ) +
+  geom_vline(
+    xintercept = turning.point,
+    linetype = "dashed",
+    linewidth = 1
+  ) +
+  labs(
+    title = "Effect of Garage Cars on Sale Price",
+    subtitle = paste(
+      "Quantile regression with GarageCars and GarageCars squared. Turning point:",
+      round(turning.point, 2),
+      "garage spaces"
+    ),
+    x = "Garage Cars",
+    y = "Sale Price"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(quantreg)
+library(scales)
+
+clean.df$GarageCars_sq <- clean.df$GarageCars^2
+clean.df$LogSalePrice <- log(clean.df$SalePrice)
+
+garage.quant.model <- rq(
+  LogSalePrice ~ GarageCars + GarageCars_sq,
+  data = clean.df,
+  tau = 0.50
+)
+
+garage.pred.df <- data.frame(
+  GarageCars = seq(
+    min(clean.df$GarageCars, na.rm = TRUE),
+    max(clean.df$GarageCars, na.rm = TRUE),
+    length.out = 200
+  )
+)
+
+garage.pred.df$GarageCars_sq <- garage.pred.df$GarageCars^2
+
+garage.pred.df$Predicted_LogSalePrice <- predict(
+  garage.quant.model,
+  newdata = garage.pred.df
+)
+
+garage.pred.df$Predicted_SalePrice <- exp(garage.pred.df$Predicted_LogSalePrice)
+
+coef.garage <- coef(garage.quant.model)
+
+turning.point <- -coef.garage["GarageCars"] / 
+  (2 * coef.garage["GarageCars_sq"])
+
+turning.price <- garage.pred.df$Predicted_SalePrice[
+  which.min(abs(garage.pred.df$GarageCars - turning.point))
+]
+
+garage.summary <- clean.df %>%
+  group_by(GarageCars) %>%
+  summarise(
+    MedianSalePrice = median(SalePrice, na.rm = TRUE),
+    Count = n(),
+    .groups = "drop"
+  )
+
+ggplot() +
+  geom_point(
+    data = garage.summary,
+    aes(x = GarageCars, y = MedianSalePrice, size = Count),
+    alpha = 0.75
+  ) +
+  geom_line(
+    data = garage.pred.df,
+    aes(x = GarageCars, y = Predicted_SalePrice),
+    linewidth = 1.4
+  ) +
+  geom_vline(
+    xintercept = turning.point,
+    linetype = "dashed",
+    linewidth = 1
+  ) +
+  annotate(
+    "label",
+    x = turning.point,
+    y = turning.price,
+    label = paste0("Turning point: ", round(turning.point, 2), " cars"),
+    vjust = -1,
+    size = 4
+  ) +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_x_continuous(
+    breaks = sort(unique(clean.df$GarageCars))
+  ) +
+  scale_size_continuous(name = "Number of Homes") +
+  labs(
+    title = "Garage Capacity and Predicted Sale Price",
+    subtitle = "Median quantile regression with GarageCars and GarageCars²",
+    x = "Garage Capacity",
+    y = "Sale Price"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+clean.df$GarageCars_sq <- clean.df$GarageCars^2
+
+garage.summary <- clean.df %>%
+  group_by(GarageCars) %>%
+  summarise(
+    MedianSalePrice = median(SalePrice, na.rm = TRUE),
+    MeanSalePrice = mean(SalePrice, na.rm = TRUE),
+    Count = n(),
+    .groups = "drop"
+  )
+
+garage.summary
+```
+
+```{r}
+library(quantreg)
+
+garage.quant.model <- rq(
+  log(SalePrice) ~ GarageCars + GarageCars_sq,
+  data = clean.df,
+  tau = 0.50
+)
+
+garage.pred.df <- garage.summary %>%
+  select(GarageCars) %>%
+  mutate(GarageCars_sq = GarageCars^2)
+
+garage.pred.df$Predicted_LogSalePrice <- predict(
+  garage.quant.model,
+  newdata = garage.pred.df
+)
+
+garage.pred.df$Predicted_SalePrice <- exp(garage.pred.df$Predicted_LogSalePrice)
+
+garage.plot.df <- garage.summary %>%
+  left_join(garage.pred.df, by = "GarageCars")
+
+ggplot(garage.plot.df, aes(x = GarageCars)) +
+  geom_line(aes(y = MedianSalePrice), linewidth = 1.4) +
+  geom_point(aes(y = MedianSalePrice, size = Count), alpha = 0.85) +
+  geom_line(
+    aes(y = Predicted_SalePrice),
+    linewidth = 1.2,
+    linetype = "dashed"
+  ) +
+  geom_text(
+    aes(y = MedianSalePrice, label = dollar(round(MedianSalePrice, 0))),
+    vjust = -1,
+    size = 4
+  ) +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_x_continuous(breaks = garage.plot.df$GarageCars) +
+  scale_size_continuous(name = "Number of Homes") +
+  labs(
+    title = "Garage Capacity: Actual Median vs Quantile Prediction",
+    subtitle = "Solid line = actual median sale price; dashed line = quantile regression prediction",
+    x = "Garage Capacity",
+    y = "Sale Price"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+garage.summary <- clean.df %>%
+  group_by(GarageCars) %>%
+  summarise(
+    MedianSalePrice = median(SalePrice, na.rm = TRUE),
+    Count = n(),
+    .groups = "drop"
+  )
+
+ggplot(garage.summary, aes(x = GarageCars, y = MedianSalePrice)) +
+  geom_line(linewidth = 1.4) +
+  geom_point(aes(size = Count), alpha = 0.85) +
+  geom_text(
+    aes(label = dollar(round(MedianSalePrice, 0))),
+    vjust = -1,
+    size = 4
+  ) +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_x_continuous(
+    breaks = garage.summary$GarageCars
+  ) +
+  scale_size_continuous(name = "Number of Homes") +
+  labs(
+    title = "Median Sale Price by Garage Capacity",
+    subtitle = "Sale price increases up to 3 garage spaces, then decreases for 4-car garages",
+    x = "Garage Capacity",
+    y = "Median Sale Price"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18),
+    plot.subtitle = element_text(size = 12),
+    axis.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+linear.summary <- summary(linear.pca.model)
+
+linear.significant <- as.data.frame(linear.summary$coefficients)
+
+linear.significant$Variable <- rownames(linear.significant)
+
+linear.significant <- linear.significant %>%
+  rename(
+    Estimate = Estimate,
+    Std_Error = `Std. Error`,
+    T_Value = `t value`,
+    P_Value = `Pr(>|t|)`
+  ) %>%
+  filter(Variable != "(Intercept)") %>%
+  mutate(
+    Significant = ifelse(P_Value < 0.05, "Yes", "No"),
+    Importance = abs(Estimate)
+  ) %>%
+  arrange(P_Value)
+
+linear.significant.only <- linear.significant %>%
+  filter(Significant == "Yes")
+
+linear.significant.only
+```
+
+```{r}
+log_rmse <- function(actual_price, predicted_price) {
+  sqrt(mean((log(actual_price) - log(predicted_price))^2))
+}
+```
+
+```{r}
+linear.pca.log.rmse <- log_rmse(, linear.pca.pred.price)
+
+lasso.pca.log.rmse <- log_rmse(actual.valid.price, lasso.pca.pred.price)
+
+ridge.pca.log.rmse <- log_rmse(actual.valid.price, ridge.pca.pred.price)
+
+quant.pca.log.rmse <- log_rmse(actual.valid.price, quant.pca.pred.price)
+```
+
